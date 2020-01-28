@@ -7,8 +7,9 @@ It is intended to act as a base for a green thread system.
 Green's low-overhead assembler implementation
 follows an _implicit yield_ pattern
 (much like Lua's coroutines).
-This should make sure it remains compatible
-with all sorts of existing synchronous algorithms.
+This is designed to make it easier to write code
+using familiar synchronous patterns,
+and should remain largely compatible with existing synchronous code.
 
 Green currently only supports Linux on x86_64.
 AArch64 support is probably coming soon,
