@@ -4,7 +4,7 @@ set -e
 
 USAGE="usage: $0 [-qvgrb -ttarget]"
 
-CFLAGS=
+CFLAGS="$CFLAGS"
 CC=gcc
 build=false
 run=false
@@ -46,7 +46,9 @@ while getopts qvgrbt:h name; do
             exit 2
         fi
 
-        mn="$(cut -d- -f1 <<<$CC)"
+        if [ "$OPTARG" != 'native' ]; then
+            mn="$(cut -d- -f1 <<<$CC)"
+        fi
 
         ;;
 

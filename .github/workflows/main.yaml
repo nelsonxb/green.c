@@ -1,0 +1,18 @@
+name: CI
+
+on: [push]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v1
+    - name: Compile
+      run: ./b.sh -vb
+      env:
+        # For some reason, Github Actions doesn't like
+        # mmap and munmap for PIE? ¯\_(ツ)_/¯
+        CFLAGS: -no-pie
+    - name: Test
+      run: ./b.sh -qr
