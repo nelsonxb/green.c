@@ -38,34 +38,23 @@ struct test {
 
 #define DECLTEST(id, name) \
     static enum test_result _test_impl_##id (); \
-    static const struct test id = { _test_impl_##id, name, NULL, TF_NORMAL }
+    static struct test id = { _test_impl_##id, name, NULL, TF_NORMAL }
 
-#define DECLTEST_SKIP(id, name, why) \
+#define DECLTEST_CR(id, name) \
     static enum test_result _test_impl_##id (); \
-    static const struct test id = { _test_impl_##id, name, "skip " why, TF_SKIP }
-
-#define DECLTEST_TODO(id, name, why) \
-    static enum test_result _test_impl_##id (); \
-    static const struct test id = { _test_impl_##id, name, "TODO " why, TF_TODO }
-
-#define DECLTESTCR(id, name) \
-    static enum test_result _test_impl_##id (); \
-    static const struct test id = { _test_impl_##id, name, NULL, TF_CRITICAL }
-
-#define DECLTESTCR_SKIP(id, name, why) \
-    static enum test_result _test_impl_##id (); \
-    static const struct test id = { _test_impl_##id, name, "skip " why, TF_CRITICAL | TF_SKIP }
-
-#define DECLTESTCR_TODO(id, name, why) \
-    static enum test_result _test_impl_##id (); \
-    static const struct test id = { _test_impl_##id, name, "TODO " why, TF_CRITICAL | TF_TODO }
+    static struct test id = { _test_impl_##id, name, NULL, TF_CRITICAL }
 
 #define DEFTEST(id) \
     static enum test_result _test_impl_##id ()
 
+#define SKIP(id, why) \
+    ((id.directive = "skip " why), (id.flags |= TF_SKIP))
+#define TODO(id, why) \
+    ((id.directive = "TODO " why), (id.flags |= TF_TODO))
 
-DECLTESTCR(test_thread_runs, "thread gets run");
-DECLTESTCR(test_await_pauses, "await pauses thread");
+
+DECLTEST_CR(test_thread_runs, "thread gets run");
+DECLTEST_CR(test_await_pauses, "await pauses thread");
 
 
 static void D(const char *fmt, ...);
@@ -74,6 +63,7 @@ static void D_write();
 
 int main()
 {
+
     static const struct test *tests[] = {
         &test_thread_runs,
         &test_await_pauses,
@@ -84,14 +74,33 @@ int main()
     D_write();
 
     enum test_result result;
+    char *ok;
+    int passed = 0, failed = 0, skipped = 0, todo = 0, todo_bonus = 0;
     for (int i = 0; i < n_tests; i += 1) {
         if (tests[i]->flags & TF_SKIP) {
             printf("ok %d %s # %s\n", i+1, tests[i]->name, tests[i]->directive);
+            skipped += 1;
             continue;
         }
 
         result = tests[i]->func();
-        char *ok = result == PASS ? "ok" : "not ok";
+        if (result == PASS) {
+            ok = "ok";
+            passed += 1;
+        } else {
+            ok = "not ok";
+            failed += 1;
+        }
+
+        if (tests[i]->flags & TF_TODO) {
+            todo += 1;
+            if (result == PASS) {
+                todo_bonus += 1;
+            } else {
+                failed -= 1;
+            }
+        }
+
         if (tests[i]->directive == NULL) {
             printf("%s %d %s\n", ok, i+1,
                 tests[i]->name);
@@ -106,6 +115,17 @@ int main()
             printf("Bail out! Needed that test to pass.");
         }
     }
+
+    printf("# Ran %d tests:\n", passed + failed);
+    printf("#   - %d passed\n", passed);
+    if (failed)
+        printf("#   - %d failed\n", failed);
+    if (skipped)
+        printf("#   - %d skipped\n", skipped);
+    if (todo && todo_bonus)
+        printf("#   - %d todo, %d of which passed anyway\n", todo, todo_bonus);
+    else if (todo)
+        printf("#   - %d todo\n", todo);
 
     return 0;
 }
