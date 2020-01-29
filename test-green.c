@@ -1,65 +1,157 @@
+#include "green.h"
+
 #include <stdlib.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <string.h>
 #include <errno.h>
-#include "green.h"
 
 
-#define PASS(D)         printf("ok %d %s\n", ++*n, (D))
-#define FAIL(D)         printf("not ok %d %s\n", ++*n, (D))
-#define SKIP(D, W)      printf("ok %d %s # skip %s\n", ++*n, (D), (W))
-#define TODO(D, W)      printf("not ok %d %s # TODO %s\n", ++*n, (D), (W))
-#define TODO_BONUS(D, W)    printf("ok %d %s # TODO %s\n", ++*n, (D), (W))
-#define ASSERT(C, D)            ((C) ? (PASS(D), 1) : (FAIL(D), 0))
-#define ASSERT_SKIP(C, D, W)    (SKIP(D, W), 0)
-#define ASSERT_TODO(C, D, W)    ((C) ? (TODO_BONUS(D), 1) : (TODO(D), 0))
-#define DIAG(F, ...)    printf("# " F "\n", ##__VA_ARGS__)
-#define BAIL(F, ...)    printf("Bail out! " F "\n", ##__VA_ARGS__); exit(81)
-#define BAILAT(F, ...)  printf("Bail out! %s() [%s:%d]: " F "\n", \
-                               __func__, __FILE__, __LINE__, \
-                               ##__VA_ARGS__); \
-                        exit(81)
+enum test_result {
+    FAIL = 0x00,
+    PASS = 0x01,
+};
+
+enum test_flags {
+    TF_NORMAL = 0x00,
+    TF_SKIP = 0x10,
+    TF_TODO = 0x20,
+    TF_CRITICAL = 0x40,
+};
+
+#define DIAG_LINE_MAX   128
+#define DIAG_LINE_COUNT 64
+
+struct diagnostics {
+    size_t diag_lines;
+    char buffer[DIAG_LINE_COUNT][DIAG_LINE_MAX];
+};
+
+struct test {
+    enum test_result (*func)();
+    const char *name;
+    const char *directive;
+    enum test_flags flags;
+};
 
 
-static void test_basic(int *n);
+#define DECLTEST(id, name) \
+    static enum test_result _test_impl_##id (); \
+    static const struct test id = { _test_impl_##id, name, NULL, TF_NORMAL }
+
+#define DECLTEST_SKIP(id, name, why) \
+    static enum test_result _test_impl_##id (); \
+    static const struct test id = { _test_impl_##id, name, "skip " why, TF_SKIP }
+
+#define DECLTEST_TODO(id, name, why) \
+    static enum test_result _test_impl_##id (); \
+    static const struct test id = { _test_impl_##id, name, "TODO " why, TF_TODO }
+
+#define DECLTESTCR(id, name) \
+    static enum test_result _test_impl_##id (); \
+    static const struct test id = { _test_impl_##id, name, NULL, TF_CRITICAL }
+
+#define DECLTESTCR_SKIP(id, name, why) \
+    static enum test_result _test_impl_##id (); \
+    static const struct test id = { _test_impl_##id, name, "skip " why, TF_CRITICAL | TF_SKIP }
+
+#define DECLTESTCR_TODO(id, name, why) \
+    static enum test_result _test_impl_##id (); \
+    static const struct test id = { _test_impl_##id, name, "TODO " why, TF_CRITICAL | TF_TODO }
+
+#define DEFTEST(id) \
+    static enum test_result _test_impl_##id ()
+
+
+DECLTESTCR(test_thread_runs, "thread gets run");
+DECLTESTCR(test_await_pauses, "await pauses thread");
+
+
+static void D(const char *fmt, ...);
+static void D_write();
+
 
 int main()
 {
-    typedef void (*test_t)(int *n);
-    static test_t tests[] = {
-        test_basic
+    static const struct test *tests[] = {
+        &test_thread_runs,
+        &test_await_pauses,
     };
-    size_t n_tests = sizeof(tests) / sizeof(test_t);
+    int n_tests = sizeof(tests) / sizeof(struct test *);
 
-    printf("TAP version 13\n");
+    printf("1..%zu\n", n_tests);
+    D_write();
 
-    int n = 0;
-    for (size_t i = 0; i < n_tests; i += 1) {
-        tests[i](&n);
+    enum test_result result;
+    for (int i = 0; i < n_tests; i += 1) {
+        if (tests[i]->flags & TF_SKIP) {
+            printf("ok %d %s # %s\n", i+1, tests[i]->name, tests[i]->directive);
+            continue;
+        }
+
+        result = tests[i]->func();
+        char *ok = result == PASS ? "ok" : "not ok";
+        if (tests[i]->directive == NULL) {
+            printf("%s %d %s\n", ok, i+1,
+                tests[i]->name);
+        } else {
+            printf("%s %d %s # %s\n", ok, i+1,
+                tests[i]->name, tests[i]->directive);
+        }
+        
+        D_write();
+
+        if (tests[i]->flags & TF_CRITICAL && result != PASS) {
+            printf("Bail out! Needed that test to pass.");
+        }
     }
 
-    printf("1..%d\n", n);
     return 0;
-
-stop:
-    return 1;
 }
 
 
-struct gaio_await {
-    int id;
-};
+static struct diagnostics _diag = { 0 };
 
-struct gaio_resume {
-    int id;
-};
+static void D(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(_diag.buffer[_diag.diag_lines++], DIAG_LINE_MAX, fmt, ap);
+    va_end(ap);
+}
+
+static void D_write()
+{
+    for (size_t li = 0; li < _diag.diag_lines; li += 1) {
+        printf("# %s\n", _diag.buffer[li]);
+    }
+
+    memset(&_diag, 0, sizeof(_diag));
+}
 
 
-static const char *_BAIL_SP_BUFR = \
-    "Bail out! Stack (%lx) broken at buffer[%ld] (%lx != %lx)\n";
-static const char *_BAIL_SP_STOR = \
-    "Bail out! Stack (%lx) broken at regs[%ld] (%lx != %lx)\n";
+static void __attribute__((used))
+_BAIL_BUFR(void *stack, long badindex,
+           unsigned long avalue, unsigned long xvalue)
+{
+    D_write();
+    printf("Bail out! Stack (%p) broken at buffer[%ld] (%lx != %lx)\n",
+           stack, badindex, avalue, xvalue);
+    exit(81);
+}
+
+static void __attribute__((used))
+_BAIL_STOR(void *stack, long badindex,
+           unsigned long avalue, unsigned long xvalue)
+{
+    D_write();
+    printf("Bail out! Stack (%p) broken at regs[%ld] (%lx != %lx)\n",
+           stack, badindex, avalue, xvalue);
+    exit(81);
+}
+
+
 green_thread_t green_spawn_sp(
     void (*start)(void *arguments),
     void *arguments,
@@ -74,21 +166,70 @@ green_await_t green_resume_sp(
 ) asm("_test_green__resume_sp");
 
 
-/*/ test_basic /*/
 
-struct basic_args {
+
+/*/ Actual test implementations /*/
+
+
+struct gaio_await {
+    int id;
+};
+
+struct gaio_resume {
+    int id;
+};
+
+struct test_args {
     int did_run;
 };
 
 static void basic_start_run_once(void *arguments)
 {
-    struct basic_args *args = arguments;
+    struct test_args *args = arguments;
     args->did_run = 1;
 }
 
+DEFTEST(test_thread_runs)
+{
+    green_thread_t co;
+    green_await_t awon;
+    struct test_args args = {
+        .did_run = 0,
+    };
+
+    co = green_spawn_sp(basic_start_run_once, &args, 0);
+
+    if (co == NULL) {
+        D("thread not created (errno: %s)", strerror(errno));
+        return FAIL;
+    }
+    else
+    if (args.did_run == 1) {
+        D("thread ran too early");
+        return FAIL;
+    }
+    
+    awon = green_resume_sp(co, NULL);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("resume failed");
+        return FAIL;
+    } else if (awon != NULL) {
+        D("thread awaited");
+        return FAIL;
+    }
+    else
+    if (args.did_run != 1) {
+        D("did_run was %d (expect 1)", args.did_run);
+        return FAIL;
+    }
+
+    return PASS;
+}
+
+
 static void basic_start_await(void *arguments)
 {
-    struct basic_args *args = arguments;
+    struct test_args *args = arguments;
     args->did_run = 0x0cfbbead;
     struct gaio_await await_on = { .id = args->did_run };
     
@@ -100,86 +241,46 @@ static void basic_start_await(void *arguments)
     args->did_run = res->id;
 }
 
-static void test_basic(int *n)
+DEFTEST(test_await_pauses)
 {
-    const char *test;
     green_thread_t co;
     green_await_t awon;
-
-    test = "thread gets run";
-    struct basic_args args = {
+    struct test_args args = {
         .did_run = 0,
     };
 
-    co = green_spawn_sp(basic_start_run_once, &args, 0);
-
-    if (co == NULL) {
-        FAIL(test);
-        DIAG("thread not created (errno: %s)", strerror(errno));
-        BAIL("Basic thread operations not working.");
-    }
-    else
-    if (args.did_run == 1) {
-        FAIL(test);
-        DIAG("thread ran too early");
-        BAIL("Basic thread operations not working.");
-    }
-    
-    awon = green_resume_sp(co, NULL);
-    if (awon == GREEN_RESUME_FAILED) {
-        FAIL(test);
-        DIAG("resume failed");
-        BAIL("Basic thread operations not working.");
-    } else if (awon != NULL) {
-        FAIL(test);
-        DIAG("thread awaited");
-        BAIL("Basic thread operations not working.");
-    }
-    else
-    if (!ASSERT(args.did_run == 1, test)) {
-        DIAG("did_run was %d (expect 1)", args.did_run);
-        BAIL("Basic thread operations not working.");
-    }
-
-
-    test = "yield pauses thread";
-    args.did_run = 0;
-
     co = green_spawn_sp(basic_start_await, &args, 0);
     if (co == NULL) {
-        FAIL(test);
-        DIAG("thread not created: %s");
-        BAIL("Basic thread operations not working.");
+        D("thread not created: %s", strerror(errno));
+        return FAIL;
     }
 
     awon = green_resume_sp(co, NULL);
     if (awon == GREEN_RESUME_FAILED) {
-        FAIL(test);
-        DIAG("resume failed");
-        BAIL("Basic thread operations not working.");
+        D("resume failed");
+        return FAIL;
     } else if (awon == NULL || args.did_run == 0) {
-        FAIL(test);
-        DIAG("thread returned early");
-        BAIL("Basic thread operations not working.");
+        D("thread returned early");
+        return FAIL;
     } else if (awon->id != args.did_run) {
-        FAIL(test);
-        DIAG("awaited object id did not match");
-        BAIL("Basic thread operations not working.");
+        D("awaited object id did not match");
+        return FAIL;
     }
 
     int xid = awon->id + 1;
     struct gaio_resume resume = { .id = xid };
     awon = green_resume_sp(co, &resume);
     if (awon != NULL) {
-        FAIL(test);
-        DIAG("thread awaited");
-        BAIL("Basic thread operations not working.");
+        D("thread awaited");
+        return FAIL;
     }
     else
-    if (!ASSERT(args.did_run == xid, test)) {
-        DIAG("did_run was %d (expect %d)", args.did_run, xid);
-        BAIL("Basic thread operations not working.");
+    if (args.did_run != xid) {
+        D("did_run was %d (expect %d)", args.did_run, xid);
+        return FAIL;
     }
+
+    return PASS;
 }
 
 
@@ -207,57 +308,49 @@ static void test_basic(int *n)
         "   cmpq    %rdx, %rbp      \n"
         "   loope   1b              \n"
         "   je      1f              \n"
-        "   movq    _BAIL_SP_BUFR(%rip), %rdi   \n"
-        "   movq    %rsp, %rsi      \n"
-        "   addq    $32, %rsi       \n"
-        "   subq    %rcx, %rsi      \n"
-        "   xchgq   %rcx, %rdx      \n"
-        "   movq    %rbp, %r8       \n"
-        "   movl    $0, %eax        \n"
-        "   call    printf          \n"
-        "   movl    $81, %edi       \n"
-        "   call    exit            \n"
+        "   movq    %rsp, %rdi      \n"
+        "   addq    $32, %rdi       \n"
+        "   subq    %rcx, %rdi      \n"
+        "   movq    %rcx, %rsi      \n"
+        "   movq    %rbp, %rcx      \n"
+        "   call    _BAIL_BUFR      \n"
         "1:                         \n"
-        "   movq    $6, %rdx        \n"
-        "   popq    %rcx            \n"
-        "   subq    $1, %rdx        \n"
-        "   movq    %r15, %r8       \n"
-        "   cmpq    %rcx, %r8       \n"
+        "   movq    $6, %rsi        \n"
+        "   popq    %rdx            \n"
+        "   subq    $1, %rsi        \n"
+        "   movq    %r15, %rcx      \n"
+        "   cmpq    %rdx, %rcx      \n"
         "   jne     2f              \n"
-        "   popq    %rcx            \n"
-        "   subq    $1, %rdx        \n"
-        "   movq    %r14, %r8       \n"
-        "   cmpq    %rcx, %r8       \n"
+        "   popq    %rdx            \n"
+        "   subq    $1, %rsi        \n"
+        "   movq    %r14, %rcx      \n"
+        "   cmpq    %rdx, %rcx      \n"
         "   jne     2f              \n"
-        "   popq    %rcx            \n"
-        "   subq    $1, %rdx        \n"
-        "   movq    %r13, %r8       \n"
-        "   cmpq    %rcx, %r8       \n"
+        "   popq    %rdx            \n"
+        "   subq    $1, %rsi        \n"
+        "   movq    %r13, %rcx      \n"
+        "   cmpq    %rdx, %rcx      \n"
         "   jne     2f              \n"
-        "   popq    %rcx            \n"
-        "   subq    $1, %rdx        \n"
-        "   movq    %r12, %r8       \n"
-        "   cmpq    %rcx, %r8       \n"
+        "   popq    %rdx            \n"
+        "   subq    $1, %rsi        \n"
+        "   movq    %r12, %rcx      \n"
+        "   cmpq    %rdx, %rcx      \n"
         "   jne     2f              \n"
-        "   popq    %rcx            \n"
-        "   subq    $1, %rdx        \n"
-        "   movq    %rbx, %r8       \n"
-        "   cmpq    %rcx, %r8       \n"
+        "   popq    %rdx            \n"
+        "   subq    $1, %rsi        \n"
+        "   movq    %rbx, %rcx      \n"
+        "   cmpq    %rdx, %rcx      \n"
         "   jne     2f              \n"
-        "   popq    %rcx            \n"
-        "   subq    $1, %rdx        \n"
-        "   movq    %rbp, %r8       \n"
-        "   cmpq    %rcx, %r8       \n"
+        "   popq    %rdx            \n"
+        "   subq    $1, %rsi        \n"
+        "   movq    %rbp, %rcx      \n"
+        "   cmpq    %rdx, %rcx      \n"
         "   je      1f              \n"
         "2:                         \n"
-        "   movq    _BAIL_SP_STOR(%rip), %rdi   \n"
-        "   movq    %rsp, %rsi      \n"
-        "   addq    $6, %rsi        \n"
-        "   subq    %rdx, %rsi      \n"
-        "   movl    $0, %eax        \n"
-        "   call    printf          \n"
-        "   movl    $81, %edi       \n"
-        "   call    exit            \n"
+        "   movq    %rsp, %rdi      \n"
+        "   addq    $6, %rdi        \n"
+        "   subq    %rdx, %rdi      \n"
+        "   call    _BAIL_STOR      \n"
         "1:                         \n"
         ".endm                      \n"
 
