@@ -74,7 +74,8 @@ static __thread green_thread_t active_thread = NULL;
  #endif
 #endif
 
-_STATIC green_thread_t _green_thread_activate(green_thread_t new_active)
+_STATIC green_thread_t __attribute__((used))
+_green_thread_activate(green_thread_t new_active)
 {
     if ((new_active - 1)->last_active != new_active) {
         return NULL;
@@ -85,7 +86,8 @@ _STATIC green_thread_t _green_thread_activate(green_thread_t new_active)
     return new_active;
 }
 
-_STATIC green_thread_t _green_thread_deactivate()
+_STATIC green_thread_t __attribute__((used))
+_green_thread_deactivate()
 {
     green_thread_t old = active_thread;
     if (old == NULL) {
