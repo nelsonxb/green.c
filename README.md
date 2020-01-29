@@ -1,6 +1,8 @@
 Tiny coroutine library for C
 ============================
 
+![CI](https://github.com/NelsonCrosby/green.c/workflows/tests/badge.svg?branch=master)
+
 Green is a very small implementation of coroutines for C-compatible languages.
 It is intended to act as a base for a green thread system.
 
