@@ -31,36 +31,39 @@
 
 #include <stddef.h>
 
-/**
+/** \file
  * The green API is fairly simple:
- *  - Call `green_spawn()` to create a thread;
- *  - Call `green_resume()` repeatedly until it returns NULL;
- *  - Call `green_await()` from within a thread to pause execution.
- * 
- * When `green_resume()` is called, the thread's code will start running.
- * If `green_await()` is called, `green_resume()` will return
- * with the value passed in `wait_for`.
- * 
- * Subsequent calls to `green_resume()` will cause
- * `green_await()` within the thread to return
- * with the value passed in `resume_with`.
- * 
- * When the `start` function passed to `green_spawn()` returns,
- * `green_resume()` will free the thread and return NULL.
- * 
- * You will probably want to define
- * `struct gaio_await` and `struct gaio_resume`
- * somewhere in your own code.
- * These types are treated as opaque pointers by this API,
- * so feel free to use them however you see fit.
- * 
- * NOTE: The function passed to `green_spawn()` MUST make sure that when it returns,
- *       it has freed any resources it owns and removed any references
- *       to memory on the thread's stack!
- *       This is because the code calling `green_resume()`
- *       will not have a chance to deal with any of that
- *       before the stack is unmapped from memory
- *       by the time it learns that the thread is finished.
+ *  - Call \ref green_spawn to create a coroutine;
+ *  - Call \ref green_resume repeatedly until it returns `NULL`;
+ *  - Call \ref green_await from within a coroutine to pause execution.
+ *
+ * Coroutines in green are essentially just an independent stack.
+ * The functions \ref green_resume and \ref green_await
+ * simply switch into and out of those stacks.
+ *
+ * Green itself is no more than this.
+ * By defining `struct gaio_await` and `struct gaio_resume`
+ * (see \ref green_await_t and \ref green_resume_t),
+ * you can define your own system for handling
+ * when and why these switches happen.
+ *
+ * You are encouraged to read the detailed documentation
+ * for the full API (there's not much of it),
+ * but here's a short version:
+ *
+ * - Define `struct gaio_await` and `struct gaio_resume`;
+ * - Write a function that looks like:
+ *   ```c
+ *   void my_coro_entrypoint(void *arguments)
+ *   {...}
+ *   ```
+ * - Call \ref green_await from some functions
+ *   that get called by `my_coro_entrypoint`;
+ * - In your main program, call \ref green_spawn
+ *   with `my_coro_entrypoint`;
+ * - Call \ref green_resume to start the coroutine;
+ * - Call \ref green_resume with various values
+ *   based on the value the last resume returned.
  */
 
 
@@ -69,15 +72,142 @@ extern "C" {
 #endif
 
 
+/**
+ * Type indicating why a coroutine has awaited.
+ *
+ * This type is treated as an opaque pointer by green,
+ * so you may define `struct gaio_await` however you see fit.
+ *
+ * It should include whatever information is needed
+ * to determine what event should cause the coroutine to resume.
+ */
 typedef struct gaio_await *green_await_t;
+
+/**
+ * Type representing the result of an awaited operation.
+ *
+ * This type is treated as an opaque pointer by green,
+ * so you may define `struct gaio_resume` however you see fit.
+ *
+ * It should include whatever information is needed
+ * to determine the result of an await operation.
+ * If you need to be able to cancel a coroutine,
+ * your definition of `struct gaio_resume` should contain
+ * some way of notifying the coroutine of this occurrence.
+ */
 typedef struct gaio_resume *green_resume_t;
+
+/**
+ * Handle to a coroutine.
+ *
+ * This type must be treated as an opaque pointer/handle.
+ * It is needed to resume a coroutine.
+ *
+ * The resources associated with a coroutine are released
+ * once the associated `start` function returns.
+ */
 typedef struct _green_thread *green_thread_t;
 
-green_thread_t green_spawn(void (*start)(void *arguments), void *arguments, size_t hint);
+/** Coroutine entrypoint. */
+typedef void (*green_start_t)(void *arguments);
+
+
+/**
+ * Create a new coroutine.
+ *
+ * Allocates resources for a new coroutine,
+ * and prepares it to run `start`.
+ *
+ * `start` will only be queued -
+ * it won't actually be called
+ * until the first call to \ref green_resume.
+ *
+ * \param[in] start     The entrypoint of the coroutine.
+ * \param[in] arguments A value to be passed straight through to `start`.
+ * \param[in] hint      A hint as to how big the stack may be.
+ *                      The actual stack size may be larger,
+ *                      and may be dynamic if the system supports it.
+ *                      The stack will never start smaller than this value.
+ *                      If zero, a sensible default will be used instead (16K).
+ * \returns
+ *  The handle to the newly-created coroutine.
+ *  If sufficient resources cannot be allocated,
+ *  returns `NULL` instead,
+ *  and the system's error code mechanism
+ *  may contain more information
+ *  (for Linux, see `mmap(3)`).
+ */
+green_thread_t green_spawn(green_start_t start, void *arguments, size_t hint);
+
+/**
+ * Run the coroutine until it needs to wait for something.
+ *
+ * If the coroutine has not yet started
+ * (i.e. the thread has been freshly returned from \ref green_spawn),
+ * `resume_with` is ignored and
+ * `start(arguments)` is called on the coroutine's stack.
+ * Otherwise, execution resumes on the coroutine's stack
+ * by causing a pending call to \ref green_await
+ * to return the value given in `resume_with`.
+ *
+ * When this function returns, either:
+ *
+ * 1. the coroutine has just called \ref green_await; or
+ * 2. the coroutine's `start` has just returned.
+ *
+ * In the latter case, all internal resources
+ * have already been freed by the time this function returns.
+ * This includes the stack pages having been removed from memory.
+ * As such, it is imperative that the coroutine
+ * organises with its caller beforehand to make sure
+ * any memory that needs to persist
+ * has been copied somewhere else.
+ *
+ * \param[in] thread      Handle to the coroutine to resume.
+ * \param[in] resume_with The value to be returned from \ref green_await.
+ *                        This value is ignored if the coroutine
+ *                        has not started yet.
+ * \returns
+ *  1. The value passed to \ref green_await;
+ *  2. `NULL`, if the coroutine has finished; or
+ *  3. `GREEN_RESUME_FAILED`, if the coroutine is currently running
+ *     (has already started and is not currently calling \ref green_await).
+ */
 green_await_t green_resume(green_thread_t thread, green_resume_t resume_with);
+
+/**
+ * Pause the current coroutine and yield control to the caller.
+ *
+ * Execution returns to the stack of
+ * whatever last called \ref green_resume.
+ * That function returns the value passed in `wait_for`.
+ *
+ * When this function returns,
+ * \ref green_resume has been called with this thread,
+ * and the value passed to `resume_with` is returned from this function.
+ *
+ * Do not call this function with a `wait_for` of `NULL`,
+ * as this value is used to signal to the caller of \ref green_resume
+ * that the coroutine has finished and is all cleaned up.
+ * If you pass `NULL`,
+ * this coroutine will never be resumed
+ * and the allocated resources will be leaked.
+ * The special value of `NULL` may be used in the future
+ * to cause this coroutine to destructively stop early,
+ * however this is currently not implemented for any platform.
+ *
+ * \param[in] wait_for The value to be returned from \ref green_resume.
+ * \returns
+ *  1. The value passed to \ref green_resume in `resume_with`; or
+ *  2. `GREEN_AWAIT_FAILED`, if called outside of any coroutine.
+ */
 green_resume_t green_await(green_await_t wait_for);
 
+
+/** Special value indicating a bad call to \ref green_resume. */
 #define GREEN_RESUME_FAILED     ((green_await_t)&green_resume)
+
+/** Special value indicating a bad call to \ref green_await. */
 #define GREEN_AWAIT_FAILED      ((green_resume_t)&green_await)
 
 

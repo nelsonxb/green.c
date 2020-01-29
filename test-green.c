@@ -173,7 +173,7 @@ _BAIL_STOR(void *stack, long badindex,
 
 
 green_thread_t green_spawn_sp(
-    void (*start)(void *arguments),
+    green_start_t start,
     void *arguments,
     size_t hint
 ) asm("_test_green__spawn_sp");

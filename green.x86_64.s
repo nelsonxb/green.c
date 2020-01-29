@@ -32,7 +32,7 @@
 	.globl green_resume
 	.globl green_await
 
-# green_thread_t green_spawn(void (*start)(void *arguments), void *arguments, size_t hint);
+# green_thread_t green_spawn(green_start_t start, void *arguments, size_t hint);
 green_spawn:
 	enter	$24, $0
 	# Save start, arguments for a second
