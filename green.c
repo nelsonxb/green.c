@@ -62,17 +62,28 @@ struct _green_thread {
 };
 
 
-static __thread green_thread_t active_thread = NULL;
-
 #ifdef _GREEN_ASM_DEBUG
- #define _STATIC
+ #ifndef _GREEN_EXPORT_INTERNALS
+  #define _GREEN_EXPORT_INTERNALS
+ #endif
 #else
- #define _STATIC static
-
  #if A_LX64
   asm(".include \"green.x86_64.s\"");
  #endif
 #endif
+
+#ifdef _GREEN_EXPORT_INTERNALS
+ #define _STATIC extern
+#else
+ #define _STATIC static
+#endif
+
+_STATIC green_thread_t *__attribute__((used))
+_green_current()
+{
+    static __thread green_thread_t current = NULL;
+    return &current;
+}
 
 _STATIC green_thread_t __attribute__((used))
 _green_thread_activate(green_thread_t new_active)
@@ -81,20 +92,22 @@ _green_thread_activate(green_thread_t new_active)
         return NULL;
     }
 
-    (new_active - 1)->last_active = active_thread;
-    active_thread = new_active;
+    green_thread_t *active = _green_current();
+    (new_active - 1)->last_active = *active;
+    *active = new_active;
     return new_active;
 }
 
 _STATIC green_thread_t __attribute__((used))
 _green_thread_deactivate()
 {
-    green_thread_t old = active_thread;
+    green_thread_t *active = _green_current();
+    green_thread_t old = *active;
     if (old == NULL) {
         return NULL;
     }
 
-    active_thread = (old - 1)->last_active;
+    *active = (old - 1)->last_active;
     (old - 1)->last_active = old;
     return old;
 }

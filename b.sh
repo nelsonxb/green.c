@@ -4,7 +4,7 @@ set -e
 
 USAGE="usage: $0 [-qvgrb -ttarget]"
 
-CFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS -D_GREEN_EXPORT_INTERNALS"
 CC=gcc
 build=false
 run=false

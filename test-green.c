@@ -61,8 +61,30 @@ static void D(const char *fmt, ...);
 static void D_write();
 
 
+static __thread void *_root_stack_active;
+static size_t _root_stack_size = 4096;
+
+static void _root_stack_init()
+{
+    void *root_s;
+#ifdef __x86_64__
+    asm (
+        "movq   %%rsp, %[root_s]\n"
+        : [root_s] "=rm" (root_s)
+    );
+#endif
+    _root_stack_active = root_s;
+}
+
+static void *_root_stack()
+{
+    return _root_stack_active;
+}
+
 int main()
 {
+
+    _root_stack_init();
 
     static const struct test *tests[] = {
         &test_thread_runs,
@@ -168,6 +190,20 @@ _BAIL_STOR(void *stack, long badindex,
     D_write();
     printf("Bail out! Stack (%p) broken at regs[%ld] (%lx != %lx)\n",
            stack, badindex, avalue, xvalue);
+    exit(81);
+}
+
+static void __attribute__((used))
+_BAIL_ACTV(void *stack, green_thread_t xthread)
+{
+    D_write();
+    if (xthread == _root_stack()) {
+        printf("Bail out! Stack (%p) is not within root stack range (%p-%zu)\n",
+               stack, xthread, _root_stack_size);
+    } else {
+        printf("Bail out! Stack (%p) is not on current thread (%p)\n",
+               stack, xthread);
+    }
     exit(81);
 }
 
@@ -309,6 +345,29 @@ DEFTEST(test_await_pauses)
         "   .text                   \n"
 
         ".macro _sprot              \n"
+#ifdef _GREEN_EXPORT_INTERNALS
+        "   call    _green_current  \n"
+        "   movq    (%rax), %rax    \n"
+        "   cmpq    $0, %rax        \n"
+        "   jne     1f              \n"
+        "   call    _root_stack     \n"
+        "   movq    _root_stack_size(%rip), %rcx    \n"
+        "   jmp     2f              \n"
+        "1:                         \n"
+        "   movq    -40(%rax), %rcx \n"
+        "2:                         \n"
+        "   cmpq    %rax, %rsp      \n"
+        "   jge     2f              \n"
+        "   subq    %rcx, %rax      \n"
+        "   cmpq    %rax, %rsp      \n"
+        "   jge     1f              \n"
+        "   addq    %rcx, %rax      \n"
+        "2:                         \n"
+        "   movq    %rsp, %rdi      \n"
+        "   movq    %rax, %rsi      \n"
+        "   call    _BAIL_ACTV      \n"
+        "1:                         \n"
+#endif
         "   pushq   %rbp            \n"
         "   pushq   %rbx            \n"
         "   pushq   %r12            \n"
