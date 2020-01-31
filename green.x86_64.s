@@ -103,11 +103,16 @@ _thread_call:
 	call	*24(%rsp)
 
 _thread_return:
-	# _green_thread_deactivate()
-	call	_green_thread_deactivate
-	# NOTE: deactivate should always return %rsi + 56,
+	call	_green_current
+	# NOTE: *current should always be %rsi + 56,
+	#	and -8(*current) should never be *current,
 	#       because if a thread is returning it must be active...
 	#       right?
+
+	# Restore last active thread
+	movq	(%rax), %rdi
+	movq	-8(%rdi), %rdi
+	movq	%rdi, (%rax)
 
 	# Prepare munmap arguments
 	leaq	48(%rsp), %rdi
@@ -132,6 +137,27 @@ _thread_return:
 
 # green_await_t green_resume(green_thread_t thread, green_resume_t resume_with);
 green_resume:
+	# Get thread-local current thread (green_thread_t *)
+	pushq	%rsi
+	pushq	%rdi
+	call	_green_current
+	popq	%rdi
+	popq	%rsi
+
+	movq	%rax, %r8
+	# Try to activate thread
+	movq	(%r8), %rcx
+	movq	%rdi, %rax
+lock	cmpxchg	%rcx, -8(%rdi)
+	je	_resume_activate_ok
+	# Thread could not be activated - it's already running somewhere!
+	leaq	green_resume(%rip), %rax
+	ret
+
+_resume_activate_ok:
+	# Set thread as current
+	movq	%rdi, (%r8)
+
 	# Save necessary registers
 	pushq	%rbp
 	pushq	%rbx
@@ -140,24 +166,11 @@ green_resume:
 	pushq	%r14
 	pushq	%r15
 
-	# thread(%rax) = _green_thread_activate(thread(%rdi))
-	pushq	%rsi
-	call	_green_thread_activate
-	popq	%rsi
-
-	cmpq	$0, %rax
-	jne	_resume_activate_ok
-	# activate returned NULL - that thread is already running!
-	leaq	green_resume(%rip), %rax
-	addq	$48, %rsp
-	ret
-
-_resume_activate_ok:
 	# Swap stack pointers in thread->rsp
-	movq	-16(%rax), %rdi
-	movq	%rsp, -16(%rax)
+	movq	-16(%rdi), %rdx
+	movq	%rsp, -16(%rdi)
 	# Hop into thread stack
-	movq	%rdi, %rsp
+	movq	%rdx, %rsp
 	# return resume_with
 	movq	%rsi, %rax
 
@@ -173,6 +186,29 @@ _resume_activate_ok:
 
 # green_resume_t green_await(green_await_t wait_for);
 green_await:
+	# Get thread-local current thread (green_thread_t *)
+	pushq	%rdi
+	call	_green_current
+	movq	%rax, %r8
+	popq	%rax    # Put wait_for into %rax for returning later
+
+	# Note that this whole process is non-atomic, since:
+	# 1. No two systhreads can share gthread in the *current list
+	#    (so only this systhread can call await); and
+	# 2. No systhread can resume this gthread until it is completely deactivated
+	#    (as the very last operation of this function).
+	# Therefore, this gthread is safely locked to this systhread
+	# until the whole function completes.
+
+	# Ensure there is actually a thread running
+	movq	(%r8), %rdi
+	cmpq	$0, %rdi
+	jne	_await_ok
+	# There is not! We're being called from the root stack!
+	leaq	green_await(%rip), %rax
+	ret
+
+_await_ok:
 	# Save necessary registers
 	pushq	%rbp
 	pushq	%rbx
@@ -181,34 +217,24 @@ green_await:
 	pushq	%r14
 	pushq	%r15
 
-	# thread = _green_thread_deactivate()
-	pushq	%rdi
-	call	_green_thread_deactivate
-	popq	%rdi
-
-	cmpq	$0, %rax
-	jne	_await_deactivate_ok
-	# deactivate returned NULL - we're not in a green thread!
-	leaq	green_await(%rip), %rax
-	addq	$48, %rsp
-	ret
-
-_await_deactivate_ok:
-	# Prepare to return wait_for in %rax
-	# but also need to keep thread in %rdi
-	xchgq	%rax, %rdi
-
 	# Swap stack pointers in thread->rsp
 	movq	-16(%rdi), %rsi
 	movq	%rsp, -16(%rdi)
 	# Hop back to calling stack
 	movq	%rsi, %rsp
 
-	# restore saved registers and return
+	# restore saved registers
 	popq	%r15
 	popq	%r14
 	popq	%r13
 	popq	%r12
 	popq	%rbx
 	popq	%rbp
+
+	# *current = last_active
+	movq	-8(%rdi), %rsi
+	movq	%rsi, (%r8)
+	# Deactivate thread
+	movq	%rdi, -8(%rdi)
+
 	ret

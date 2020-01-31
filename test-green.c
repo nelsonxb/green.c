@@ -650,7 +650,7 @@ DEFTEST(test_bad_await)
 }
 
 
-#ifdef __x86_64__
+#if defined(__x86_64__)
     asm(
         "   .text                   \n"
 
