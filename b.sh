@@ -30,7 +30,7 @@ while getopts qvgrbt:h name; do
     v)  let ++vn
         ;;
 
-    g)  CFLAGS+=" -g -D_GREEN_ASM_DEBUG"
+    g)  CFLAGS+=" -g -D_GREEN_ASM_DEBUG -Wall -Werror"
         add_asm=true
         ;;
 

@@ -103,7 +103,7 @@ int main()
     };
     int n_tests = sizeof(tests) / sizeof(struct test *);
 
-    printf("1..%zu\n", n_tests);
+    printf("1..%d\n", n_tests);
     D_write();
 
     enum test_result result;
