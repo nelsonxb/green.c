@@ -53,10 +53,6 @@ struct test {
     ((id.directive = "TODO " why), (id.flags |= TF_TODO))
 
 
-DECLTEST_CR(test_thread_runs, "thread gets run");
-DECLTEST_CR(test_await_pauses, "await pauses thread");
-
-
 static void D(const char *fmt, ...);
 static void D_write();
 
@@ -81,6 +77,12 @@ static void *_root_stack()
     return _root_stack_active;
 }
 
+
+DECLTEST_CR(test_thread_runs, "coroutine gets run");
+DECLTEST_CR(test_await_pauses, "await pauses coroutine");
+DECLTEST(test_thread_switches, "multiple coroutines switch without interfering");
+DECLTEST(test_thread_nesting, "coroutines can start and resume each other");
+
 int main()
 {
 
@@ -89,6 +91,8 @@ int main()
     static const struct test *tests[] = {
         &test_thread_runs,
         &test_await_pauses,
+        &test_thread_switches,
+        &test_thread_nesting,
     };
     int n_tests = sizeof(tests) / sizeof(struct test *);
 
@@ -130,7 +134,7 @@ int main()
             printf("%s %d %s # %s\n", ok, i+1,
                 tests[i]->name, tests[i]->directive);
         }
-        
+
         D_write();
 
         if (tests[i]->flags & TF_CRITICAL && result != PASS) {
@@ -138,6 +142,7 @@ int main()
         }
     }
 
+    printf("#\n");
     printf("# Ran %d tests:\n", passed + failed);
     printf("#   - %d passed\n", passed);
     if (failed)
@@ -148,6 +153,7 @@ int main()
         printf("#   - %d todo, %d of which passed anyway\n", todo, todo_bonus);
     else if (todo)
         printf("#   - %d todo\n", todo);
+    printf("#\n");
 
     return 0;
 }
@@ -229,6 +235,7 @@ green_await_t green_resume_sp(
 
 struct gaio_await {
     int id;
+    green_thread_t subthread;
 };
 
 struct gaio_resume {
@@ -264,7 +271,7 @@ DEFTEST(test_thread_runs)
         D("thread ran too early");
         return FAIL;
     }
-    
+
     awon = green_resume_sp(co, NULL);
     if (awon == GREEN_RESUME_FAILED) {
         D("resume failed");
@@ -288,7 +295,7 @@ static void basic_start_await(void *arguments)
     struct test_args *args = arguments;
     args->did_run = 0x0cfbbead;
     struct gaio_await await_on = { .id = args->did_run };
-    
+
     green_resume_t res = green_await_sp(&await_on);
     if (res == GREEN_AWAIT_FAILED || res == NULL) {
         return;
@@ -333,6 +340,238 @@ DEFTEST(test_await_pauses)
     else
     if (args.did_run != xid) {
         D("did_run was %d (expect %d)", args.did_run, xid);
+        return FAIL;
+    }
+
+    return PASS;
+}
+
+
+static void schedtest_start(void *arguments)
+{
+    struct test_args *args = arguments;
+    struct gaio_await awon = { 0 };
+    do {
+        awon.id += 1;
+    } while (green_await_sp(&awon) != NULL);
+    args->did_run = awon.id;
+}
+
+DEFTEST(test_thread_switches)
+{
+    green_thread_t co[6];
+    struct test_args arguments[6];
+    green_await_t awon;
+
+    for (size_t i = 0; i < 6; i += 1) {
+        arguments[i].did_run = 0;
+        co[i] = green_spawn_sp(schedtest_start, &arguments[i], 4096);
+        if (co == NULL) {
+            D("thread not created: %s", strerror(errno));
+            return FAIL;
+        }
+    }
+
+    struct gaio_resume resinfo = {};
+    for (size_t i = 0; i < 6; i += 1)
+    for (size_t k = i; k < 6; k += 1) {
+        awon = green_resume_sp(co[k], &resinfo);
+        if (awon == GREEN_RESUME_FAILED) {
+            D("resume thread %zu (round %zu) failed", k, i);
+            return FAIL;
+        } else if (awon == NULL) {
+            D("thread %zu (round %zu) returned early", k, i);
+            return FAIL;
+        }
+    }
+
+    for (size_t i = 0; i < 6; i += 1) {
+        awon = green_resume_sp(co[i], NULL);
+        if (awon == GREEN_RESUME_FAILED) {
+            D("resume thread %zu (stopping) failed", i);
+            return FAIL;
+        } else if (awon != NULL) {
+            D("thread %zu failed to return", i);
+            return FAIL;
+        }
+    }
+
+    size_t nne = 0;
+    for (int i = 0; i < 6; i += 1) {
+        if (arguments[i].did_run != (i + 1)) {
+            nne += 1;
+            D("thread %d gave incorrect count %d", i, arguments[i].did_run);
+        }
+    }
+
+    return nne > 0 ? FAIL : PASS;
+}
+
+
+struct nesttest_args {
+    green_thread_t parent;
+};
+
+static void nesttest_start_b(void *arguments)
+{
+    green_thread_t a = ((struct nesttest_args *)arguments)->parent;
+    green_await_t awon;
+    green_resume_t next;
+
+    struct gaio_await b_awon = { 2 };
+    next = green_await_sp(&b_awon);
+    if (next == GREEN_AWAIT_FAILED) {
+        D("await failed in b");
+        return;
+    } else if (next->id != 1) {
+        D("b expected to be resumed by a, got %d", next->id);
+        return;
+    }
+
+    next = green_await_sp(&b_awon);
+    if (next == GREEN_AWAIT_FAILED) {
+        D("await failed in b");
+        return;
+    } else if (next->id != 0) {
+        D("b expected to be resumed by root, got %d", next->id);
+        return;
+    }
+
+    struct gaio_resume b_resinfo = { 2 };
+    awon = green_resume_sp(a, &b_resinfo);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("resume failed (b calls a)");
+        return;
+    } else if (awon == NULL) {
+        D("a returned early (b calls a)");
+        return;
+    } else if (awon->id != 1) {
+        D("b expected that a would await 1, got %d", awon->id);
+        return;
+    }
+
+    green_await_sp(&b_awon);
+}
+
+green_thread_t *_green_current();
+
+static void nesttest_start_a(void *arguments)
+{
+    green_thread_t b;
+    green_await_t awon;
+    green_resume_t next;
+
+    struct nesttest_args b_args = { *_green_current() };
+    b = green_spawn_sp(nesttest_start_b, &b_args, 4096);
+    if (b == NULL) {
+        D("thread b not created: %s", strerror(errno));
+        return;
+    }
+
+    awon = green_resume_sp(b, NULL);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("failed to start b (a resumes b)");
+        return;
+    } else if (awon == NULL) {
+        D("b returned immediately (a resumes b)");
+        return;
+    } else if (awon->id != 2) {
+        D("expected that b would await 2, got %d", awon->id);
+        return;
+    }
+
+    struct gaio_await a_awon = { 1, b };
+    next = green_await_sp(&a_awon);
+    if (next == GREEN_AWAIT_FAILED) {
+        D("await failed in a");
+        return;
+    } else if (next->id != 0) {
+        D("a expected to be resumed by root, got %d", next->id);
+        return;
+    }
+
+    struct gaio_resume a_resinfo = { 1 };
+    awon = green_resume_sp(b, &a_resinfo);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("resume failed (a calls b)");
+        return;
+    } else if (awon == NULL) {
+        D("b returned early (a calls b)");
+        return;
+    } else if (awon->id != 2) {
+        D("a expected that b would await 2, got %d", awon->id);
+        return;
+    }
+
+    next = green_await_sp(&a_awon);
+    if (next == GREEN_AWAIT_FAILED) {
+        D("await failed in a");
+        return;
+    } else if (next->id != 2) {
+        D("a expected to be resumed by b, got %d", awon->id);
+        return;
+    }
+
+    green_await_sp(&a_awon);
+}
+
+DEFTEST(test_thread_nesting)
+{
+    green_thread_t a, b;
+    green_await_t awon;
+
+    a = green_spawn_sp(nesttest_start_a, NULL, 4096);
+    if (a == NULL) {
+        D("thread a not created: %s", strerror(errno));
+        return FAIL;
+    }
+
+    awon = green_resume_sp(a, NULL);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("resume failed on a");
+        return FAIL;
+    } else if (awon == NULL) {
+        D("a returned early");
+        return FAIL;
+    } else if ((b = awon->subthread) == NULL) {
+        D("a did not send back a coroutine");
+        return FAIL;
+    }
+
+    struct gaio_resume resinfo = { 0 };
+    awon = green_resume_sp(a, &resinfo);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("resume failed on a");
+        return FAIL;
+    } else if (awon == NULL) {
+        D("a returned early");
+        return FAIL;
+    }
+
+    awon = green_resume_sp(b, &resinfo);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("resume failed on b");
+        return FAIL;
+    } else if (awon == NULL) {
+        D("b returned early");
+        return FAIL;
+    }
+
+    awon = green_resume_sp(a, NULL);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("final resume failed on a");
+        return FAIL;
+    } else if (awon != NULL) {
+        D("final resume did not end a");
+        return FAIL;
+    }
+
+    awon = green_resume_sp(b, NULL);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("final resume failed on b");
+        return FAIL;
+    } else if (awon != NULL) {
+        D("final resume did not end b");
         return FAIL;
     }
 
