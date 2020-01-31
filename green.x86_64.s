@@ -62,6 +62,8 @@ _alloc:
 	# mmap returned MAP_FAILED; gotta return NULL.
 	movq	$0, %rax
 	addq	$24, %rsp
+
+	leave
 	ret
 
 _alloc_ok:

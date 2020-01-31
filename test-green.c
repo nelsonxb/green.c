@@ -83,6 +83,10 @@ DECLTEST_CR(test_await_pauses, "await pauses coroutine");
 DECLTEST(test_thread_switches, "multiple coroutines switch without interfering");
 DECLTEST(test_thread_nesting, "coroutines can start and resume each other");
 
+DECLTEST(test_bad_alloc, "spawn returns a sensible error when allocation was not possible");
+DECLTEST(test_bad_resume, "coroutine cannot resume while already running");
+DECLTEST(test_bad_await, "cannot await from outside a coroutine");
+
 int main()
 {
 
@@ -93,6 +97,9 @@ int main()
         &test_await_pauses,
         &test_thread_switches,
         &test_thread_nesting,
+        &test_bad_alloc,
+        &test_bad_resume,
+        &test_bad_await,
     };
     int n_tests = sizeof(tests) / sizeof(struct test *);
 
@@ -572,6 +579,70 @@ DEFTEST(test_thread_nesting)
         return FAIL;
     } else if (awon != NULL) {
         D("final resume did not end b");
+        return FAIL;
+    }
+
+    return PASS;
+}
+
+
+DEFTEST(test_bad_alloc)
+{
+    green_thread_t co = green_spawn_sp(basic_start_run_once, NULL, -1ULL);
+    if (co != NULL) {
+        D("somehow managed to allocate a thread of size %zu??", -1ULL);
+        return FAIL;
+    } else if (errno != ENOMEM) {
+        D("errno should have been ENOMEM, got: %s", strerror(errno));
+        return FAIL;
+    }
+
+    return PASS;
+}
+
+static void bad_resume_start(void *arguments)
+{
+    enum test_result *result = arguments;
+    green_await_t awon = green_resume_sp(*_green_current(), NULL);
+    if (awon != GREEN_RESUME_FAILED) {
+        D("somehow managed to resume a running thread");
+        *result = FAIL;
+        return;
+    }
+
+    *result = PASS;
+}
+
+DEFTEST(test_bad_resume)
+{
+    green_thread_t co;
+    green_await_t awon;
+    enum test_result result = FAIL;
+
+    co = green_spawn_sp(bad_resume_start, &result, 4096);
+    if (co == NULL) {
+        D("thread not created: %s", strerror(errno));
+        return FAIL;
+    }
+
+    awon = green_resume_sp(co, NULL);
+    if (awon == GREEN_RESUME_FAILED) {
+        D("failed to start");
+        return FAIL;
+    } else if (awon != NULL) {
+        D("unexpected await");
+        return FAIL;
+    }
+
+    return result;
+}
+
+DEFTEST(test_bad_await)
+{
+    struct gaio_await awon = {};
+    green_resume_t next = green_await_sp(&awon);
+    if (next != GREEN_AWAIT_FAILED) {
+        D("await was somehow successful??");
         return FAIL;
     }
 
