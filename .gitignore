@@ -1,5 +1,6 @@
 *.o
 a.out
 test-green
+test-green.*
 
 /docs/html

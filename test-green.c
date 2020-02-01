@@ -58,21 +58,28 @@ static void D_write();
 
 
 static __thread void *_root_stack_active;
-static size_t _root_stack_size = 4096;
+static size_t __attribute__((used)) _root_stack_size = 4096;
 
 static void _root_stack_init()
 {
     void *root_s;
-#ifdef __x86_64__
+#if defined(__x86_64__)
     asm (
         "movq   %%rsp, %[root_s]\n"
         : [root_s] "=rm" (root_s)
     );
+
+#elif defined(__aarch64__)
+    asm (
+        "mov    %[root_s], sp\n"
+        : [root_s] "=r" (root_s)
+    );
+
 #endif
     _root_stack_active = root_s;
 }
 
-static void *_root_stack()
+static void *__attribute__((used)) _root_stack()
 {
     return _root_stack_active;
 }
@@ -145,7 +152,8 @@ int main()
         D_write();
 
         if (tests[i]->flags & TF_CRITICAL && result != PASS) {
-            printf("Bail out! Needed that test to pass.");
+            printf("Bail out! Needed that test to pass.\n");
+            return 1;
         }
     }
 
@@ -304,7 +312,8 @@ static void basic_start_await(void *arguments)
     struct gaio_await await_on = { .id = args->did_run };
 
     green_resume_t res = green_await_sp(&await_on);
-    if (res == GREEN_AWAIT_FAILED || res == NULL) {
+    if (res == GREEN_AWAIT_FAILED) {
+        D("await failed");
         return;
     }
 
@@ -373,8 +382,8 @@ DEFTEST(test_thread_switches)
     for (size_t i = 0; i < 6; i += 1) {
         arguments[i].did_run = 0;
         co[i] = green_spawn_sp(schedtest_start, &arguments[i], 4096);
-        if (co == NULL) {
-            D("thread not created: %s", strerror(errno));
+        if (co[i] == NULL) {
+            D("thread %d not created: %s", i, strerror(errno));
             return FAIL;
         }
     }
@@ -788,4 +797,175 @@ DEFTEST(test_bad_await)
         "   popq    %r13            \n"
         "   ret                     \n"
     );
+
+#elif defined(__aarch64__)
+    asm(
+        "   .text                           \n"
+
+        ".macro _sprot                      \n"
+#ifdef _GREEN_EXPORT_INTERNALS
+        "   bl      _green_current          \n"
+        "   ldr     x0, [x0]                \n"
+        "   cmp     x0, #0                  \n"
+        "   bne     1f                      \n"
+        "   bl      _root_stack             \n"
+        "   ldr     x1, _root_stack_size    \n"
+        "   b       2f                      \n"
+        "1:                                 \n"
+        "   ldr     x1, [x0, #8]            \n"
+        "2:                                 \n"
+        "   cmp     sp, x0                  \n"
+        "   bge     2f                      \n"
+        "   sub     x0, x0, x1              \n"
+        "   cmp     sp, x0                  \n"
+        "   bge     1f                      \n"
+        "   add     x0, x0, x1              \n"
+        "2:                                 \n"
+        "   mov     x0, x1                  \n"
+        "   mov     sp, x0                  \n"
+        "   bl      _BAIL_ACTV              \n"
+        "1:                                 \n"
+#endif
+        "   mov     x6, sp                  \n"
+        "   stp     x29, x6, [sp, #-16]!    \n"
+        "   stp     x27, x28, [sp, #-16]!   \n"
+        "   stp     x25, x26, [sp, #-16]!   \n"
+        "   stp     x23, x24, [sp, #-16]!   \n"
+        "   stp     x21, x22, [sp, #-16]!   \n"
+        "   stp     x19, x20, [sp, #-16]!   \n"
+        "   sub     x1, sp, #(32*8)         \n"
+        "1:                                 \n"
+        "   stp     x29, x29, [sp, #-16]!   \n"
+        "   cmp     sp, x1                  \n"
+        "   bne     1b                      \n"
+        ".endm                              \n"
+
+        ".macro _stest                      \n"
+        "   mov     x6, sp                  \n"
+        "   mov     x1, #31                 \n"
+        "   mov     x3, x29                 \n"
+        "1:                                 \n"
+        "   ldr     x2, [x6, x1, lsl #3]    \n"
+        "   cmp     x2, x3                  \n"
+        "   bne     2f                      \n"
+        "   subs    x1, x1, #1              \n"
+        "   bpl     1b                      \n"
+        "   add     x6, x6, #(32*8)         \n"
+        "   b       1f                      \n"
+        "2:                                 \n"
+        "   mov     x0, x6                  \n"
+        "   mov     x5, #31                 \n"
+        "   sub     x1, x5, x1              \n"
+        "   mov     x3, x29                 \n"
+        "   bl      _BAIL_BUFR              \n"
+        "1:                                 \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x19                 \n"
+        "   csel    x3, x19, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x20                 \n"
+        "   csel    x3, x20, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x21                 \n"
+        "   csel    x3, x21, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x22                 \n"
+        "   csel    x3, x22, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x23                 \n"
+        "   csel    x3, x23, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x24                 \n"
+        "   csel    x3, x24, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x25                 \n"
+        "   csel    x3, x25, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x26                 \n"
+        "   csel    x3, x26, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x27                 \n"
+        "   csel    x3, x27, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x28                 \n"
+        "   csel    x3, x28, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x29                 \n"
+        "   csel    x3, x29, x3, ne         \n"
+        "   bne     2f                      \n"
+        "   ldr     x2, [x6], #8            \n"
+        "   cmp     x2, x6                  \n"
+        "   csel    x3, x6, x3, ne          \n"
+        "   beq     1f                      \n"
+        "2:                                 \n"
+        "   mov     x5, sp                  \n"
+        "   sub     x1, x6, x6              \n"
+        "   add     x0, sp, #12             \n"
+        "   bl      _BAIL_STOR              \n"
+        "1:                                 \n"
+        "   mov     sp, x6                  \n"
+        ".endm                              \n"
+
+        "_test_green__spawn_sp:             \n"
+        "   stp     x29, lr, [sp, #-16]!    \n"
+        "   mov     x29, sp                 \n"
+        "   stp     x19, x20, [sp, #-16]!   \n"
+        "   stp     x21, x22, [sp, #-16]!   \n"
+        "   adr     x19, _test_green__spawn_sp  \n"
+        "   mov     x20, x0                 \n"
+        "   mov     x21, x1                 \n"
+        "   mov     x22, x2                 \n"
+        "   _sprot                          \n"
+        "   mov     x0, x20                 \n"
+        "   mov     x1, x21                 \n"
+        "   mov     x2, x22                 \n"
+        "   bl      green_spawn             \n"
+        "   _stest                          \n"
+        "   ldp     x21, x22, [sp], #16     \n"
+        "   ldp     x19, x20, [sp], #16     \n"
+        "   ldp     x29, lr, [sp], #16      \n"
+        "   ret                             \n"
+
+        "_test_green__await_sp:             \n"
+        "   stp     x29, lr, [sp, #-16]!    \n"
+        "   stp     x19, x20, [sp, #-16]!   \n"
+        "   adr     x19, _test_green__await_sp  \n"
+        "   mov     x20, x0                 \n"
+        "   _sprot                          \n"
+        "   mov     x0, x20                 \n"
+        "   mov     x1, x21                 \n"
+        "   bl      green_await             \n"
+        "   _stest                          \n"
+        "   ldp     x19, x20, [sp], #16     \n"
+        "   ldp     x29, lr, [sp], #16      \n"
+        "   ret                             \n"
+
+        "_test_green__resume_sp:            \n"
+        "   stp     x29, lr, [sp, #-16]!    \n"
+        "   stp     x19, x20, [sp, #-16]!   \n"
+        "   str     x21, [sp, #-16]!        \n"
+        "   adr     x19, _test_green__resume_sp \n"
+        "   mov     x20, x0                 \n"
+        "   mov     x21, x1                 \n"
+        "   _sprot                          \n"
+        "   mov     x0, x20                 \n"
+        "   mov     x1, x21                 \n"
+        "   bl      green_resume            \n"
+        "   _stest                          \n"
+        "   ldr     x21, [sp], #16          \n"
+        "   ldp     x19, x20, [sp], #16     \n"
+        "   ldp     x29, lr, [sp], #16      \n"
+        "   ret                             \n"
+    );
+
 #endif

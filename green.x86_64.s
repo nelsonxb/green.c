@@ -28,9 +28,9 @@
 
 	.text
 
-	.globl green_spawn
-	.globl green_resume
-	.globl green_await
+	.globl	green_spawn
+	.globl	green_resume
+	.globl	green_await
 
 # green_thread_t green_spawn(green_start_t start, void *arguments, size_t hint);
 green_spawn:
@@ -61,8 +61,6 @@ _alloc:
 	jne	_alloc_ok
 	# mmap returned MAP_FAILED; gotta return NULL.
 	movq	$0, %rax
-	addq	$24, %rsp
-
 	leave
 	ret
 
@@ -126,6 +124,7 @@ _thread_return:
 	call	munmap
 
 	# restore saved registers and return
+	# (uses zero returned from munmap)
 	popq	%r15
 	popq	%r14
 	popq	%r13

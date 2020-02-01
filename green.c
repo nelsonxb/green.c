@@ -39,7 +39,6 @@
   #define A_ARM64 1
   #define A_LX64 0
   #define A_ARM32 0
-  #error TODO: AArch64 support
  #elif defined(__arm__)
   #define A_ARM32 1
   #define A_LX64 0
@@ -69,6 +68,8 @@ struct _green_thread {
 #else
  #if A_LX64
   asm(".include \"green.x86_64.s\"");
+ #elif A_ARM64
+  asm(".include \"green.aarch64.s\"");
  #endif
 #endif
 
