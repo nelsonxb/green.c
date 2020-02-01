@@ -13,11 +13,8 @@ This is designed to make it easier to write code
 using familiar synchronous patterns,
 and should remain largely compatible with existing synchronous code.
 
-Green currently only supports Linux on x86_64.
-AArch64 support is probably coming soon,
-maybe also 32-bit ARM.
-Other OSes may be implemented as I need them
-(Windows support is likely to happen at some point).
+Green currently only supports Linux on x86_64 and AArch64.
+Other platforms may happen in the future.
 
 
 Using
